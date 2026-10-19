@@ -1,0 +1,16 @@
+{
+  "name": "Loopline",
+  "short_name": "Loopline",
+  "description": "Fill every square in one stroke and close the loop",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14161d",
+  "theme_color": "#14161d",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

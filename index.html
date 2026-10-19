@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#14161d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Loopline">
+  <title>Loopline</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="bar">
+    <button class="icon" id="btn-levels" aria-label="Levels">☰</button>
+    <div class="title">
+      <button class="icon small" id="btn-prev" aria-label="Previous level">‹</button>
+      <span id="level-name">Level 1</span>
+      <button class="icon small" id="btn-next" aria-label="Next level">›</button>
+    </div>
+    <button class="icon" id="btn-hint" aria-label="Hint">?</button>
+  </header>
+
+  <div class="meter"><div id="meter-fill"></div></div>
+  <p id="status" class="status">Fill every square in one stroke and finish where you started.</p>
+
+  <main id="stage">
+    <canvas id="board"></canvas>
+  </main>
+
+  <div id="win" class="overlay" hidden>
+    <div class="card">
+      <h2>Loop closed!</h2>
+      <p id="win-time"></p>
+      <button id="btn-continue" class="primary">Next level</button>
+    </div>
+  </div>
+
+  <div id="levels" class="overlay" hidden>
+    <div class="card wide">
+      <div class="card-head">
+        <h2>Levels</h2>
+        <button class="icon" id="btn-close-levels" aria-label="Close">✕</button>
+      </div>
+      <div id="level-grid" class="level-grid"></div>
+    </div>
+  </div>
+
+  <div id="help" class="overlay" hidden>
+    <div class="card">
+      <h2>How to play</h2>
+      <ol class="rules">
+        <li>Put your finger on any square.</li>
+        <li>Drag through <b>every</b> square without lifting.</li>
+        <li>Finish by sliding back onto the square you started on.</li>
+      </ol>
+      <p class="muted">Slide back along your line to undo. Lift early and the line resets.</p>
+      <button id="btn-help-ok" class="primary">Got it</button>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
