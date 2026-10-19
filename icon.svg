@@ -1,10 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="112" fill="#14161d"/>
-  <g fill="#2a2e3b">
-    <rect x="72" y="72" width="104" height="104" rx="20"/><rect x="204" y="72" width="104" height="104" rx="20"/><rect x="336" y="72" width="104" height="104" rx="20"/>
-    <rect x="72" y="204" width="104" height="104" rx="20"/><rect x="336" y="204" width="104" height="104" rx="20"/>
-    <rect x="72" y="336" width="104" height="104" rx="20"/><rect x="204" y="336" width="104" height="104" rx="20"/><rect x="336" y="336" width="104" height="104" rx="20"/>
+  <g stroke-linecap="round" stroke-linejoin="round" stroke-width="30" fill="none">
+    <path d="M256 96 L416 216 L416 416 L96 416 L96 216 Z" stroke="#3fd6c4"/>
+    <path d="M96 216 L416 416 M416 216 L96 416" stroke="#3a3f50"/>
+    <path d="M96 216 L416 216" stroke="#3fd6c4"/>
   </g>
-  <path d="M124 124H388V388H124Z" fill="none" stroke="#3fd6c4" stroke-width="40" stroke-linejoin="round"/>
-  <circle cx="124" cy="124" r="34" fill="#3fd6c4"/>
+  <g fill="#eafffb">
+    <circle cx="256" cy="96" r="26"/><circle cx="416" cy="216" r="26"/><circle cx="416" cy="416" r="26"/>
+    <circle cx="96" cy="416" r="26"/><circle cx="96" cy="216" r="26"/><circle cx="256" cy="316" r="26"/>
+  </g>
 </svg>

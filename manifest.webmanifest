@@ -1,7 +1,7 @@
 {
   "name": "Loopline",
   "short_name": "Loopline",
-  "description": "Fill every square in one stroke and close the loop",
+  "description": "Trace every line in one stroke and end where you started",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

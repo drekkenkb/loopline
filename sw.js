@@ -1,6 +1,6 @@
 // Cache-first so the game works offline. build.sh stamps the cache name, so each deploy starts a fresh cache and the
 // old one is dropped.
-const CACHE = "loopline-166030989116";
+const CACHE = "loopline-4ce7b6415dd8";
 const SHELL = ["./", "index.html", "app.js", "app.css", "gen.js",
   "manifest.webmanifest", "icon.svg", "icon-180.png"];
 

@@ -1,7 +1,8 @@
-// Puzzle generation. A puzzle is a set of open cells that has at least one closed loop visiting every cell exactly
-// once. We build the loop first and let the shape fall out of it: start with a 2x2 ring and keep "bumping" a random
-// edge of the loop outward into two empty cells (a->b becomes a->c->d->b) until enough of the grid is covered. Every
-// cell the loop never reaches becomes a wall, so every level is solvable by construction.
+// Puzzle generation. A puzzle is a drawing made of dots and lines that can be traced in one stroke, using every line
+// exactly once and finishing on the starting dot. That works exactly when the drawing is connected and every dot has
+// an even number of lines, so we build it out of closed loops that don't share lines: each loop adds two lines to
+// every dot it passes through, which keeps every count even. Loops are taken from a grid of dots with straight and
+// (non-crossing) diagonal links, and each new loop must touch the drawing so far, so it stays connected.
 
 export function mulberry32(seed) {
   let a = seed >>> 0;
@@ -14,99 +15,160 @@ export function mulberry32(seed) {
   };
 }
 
-// Returns the loop as a list of cell indices (y * w + x) in order, or fewer cells than asked if it got stuck.
-// `rocks` is the share of cells to block off before growing, which leaves obstacles inside the shape, not just
-// ragged edges.
-export function growLoop(w, h, target, rng, rocks = 0) {
-  const next = new Int32Array(w * h).fill(-1);
-  const x0 = Math.floor(rng() * (w - 1)), y0 = Math.floor(rng() * (h - 1));
-  const a = y0 * w + x0;
-  for (let i = Math.round(w * h * rocks); i > 0; i--) {
-    const c = Math.floor(rng() * w * h), cx = c % w - x0, cy = ((c / w) | 0) - y0;
-    if (cx < 0 || cx > 1 || cy < 0 || cy > 1) next[c] = -2;
+const pick = (arr, rng) => arr[Math.floor(rng() * arr.length)];
+function shuffle(arr, rng) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-  next[a] = a + 1; next[a + 1] = a + 1 + w; next[a + 1 + w] = a + w; next[a + w] = a;
-  let count = 4;
-  const cands = [];
-  while (count < target) {
-    cands.length = 0;
-    let p = a;
-    do {
-      const q = next[p];
-      const px = p % w, py = (p / w) | 0;
-      const offs = q - p === 1 || q - p === -1
-        ? [py > 0 ? -w : 0, py < h - 1 ? w : 0]
-        : [px > 0 ? -1 : 0, px < w - 1 ? 1 : 0];
-      for (const d of offs) {
-        if (d && next[p + d] === -1 && next[q + d] === -1) cands.push(p, q, p + d, q + d);
-      }
-      p = q;
-    } while (p !== a);
-    if (!cands.length) break;
-    const i = Math.floor(rng() * (cands.length / 4)) * 4;
-    const [s, t, c, d] = cands.slice(i, i + 4);
-    next[s] = c; next[c] = d; next[d] = t;
-    count += 2;
-  }
-  const loop = [];
-  let p = a;
-  do { loop.push(p); p = next[p]; } while (p !== a);
-  return loop;
+  return arr;
 }
 
-// Size and density ramp up with the level number; the rest is seeded from it, so level N is the same for everyone.
+// Size and line count ramp up with the level number; the rest is seeded from it, so level N is the same for everyone.
 export function levelParams(n) {
-  const tier = Math.min(n - 1, 40);
-  const w = Math.min(4 + Math.floor(tier / 5), 8);
-  const h = Math.min(4 + Math.floor(tier / 3.5), 11);
-  return { w, h };
+  const cols = Math.min(3 + Math.floor((n - 1) / 8), 5);
+  const rows = Math.min(3 + Math.floor((n - 1) / 5), 7);
+  const lines = Math.min(6 + Math.floor(n * 0.9), Math.round(cols * rows * 1.5));
+  return { cols, rows, lines };
+}
+
+// The grid every drawing is cut from: straight links between neighbours, plus at most one diagonal per square so no
+// two lines cross away from a dot.
+function candidateLinks(cols, rows, diagonals, rng) {
+  const links = [];
+  const id = (x, y) => y * cols + x;
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (x < cols - 1) links.push([id(x, y), id(x + 1, y)]);
+      if (y < rows - 1) links.push([id(x, y), id(x, y + 1)]);
+      if (x < cols - 1 && y < rows - 1 && rng() < diagonals) {
+        links.push(rng() < 0.5 ? [id(x, y), id(x + 1, y + 1)] : [id(x + 1, y), id(x, y + 1)]);
+      }
+    }
+  }
+  return links;
+}
+
+// A random closed loop through `start` over links not taken yet, at most `maxLen` lines long, or null.
+function findLoop(start, adj, taken, maxLen, rng) {
+  const onWalk = new Set([start]);
+  const walk = [];
+  let budget = 4000;
+  function dfs(v) {
+    if (--budget < 0) return false;
+    for (const [u, e] of shuffle([...adj[v]], rng)) {
+      if (taken[e]) continue;
+      if (u === start && walk.length >= 2) { walk.push(e); return true; }
+      if (onWalk.has(u) || walk.length + 1 >= maxLen) continue;
+      onWalk.add(u); walk.push(e);
+      if (dfs(u)) return true;
+      onWalk.delete(u); walk.pop();
+    }
+    return false;
+  }
+  return dfs(start) ? walk : null;
 }
 
 export function makeLevel(n) {
-  const { w, h } = levelParams(n);
+  const { cols, rows, lines } = levelParams(n);
   const rng = mulberry32(Math.imul(n, 2654435761) ^ 0x5eed);
-  // Early levels stay roomy; later ones mix dense boards with gappy, corridor-heavy ones.
-  const fill = n <= 3 ? 0.75 + rng() * 0.25 : 0.62 + rng() * 0.33;
-  const rocks = n <= 3 ? 0 : 0.04 + rng() * 0.1;
-  const target = Math.max(6, Math.round(w * h * Math.min(fill, 1 - rocks)));
-  let loop = growLoop(w, h, target, rng, rocks);
-  for (let tries = 0; tries < 30 && loop.length < target * 0.9; tries++) {
-    const again = growLoop(w, h, target, rng, rocks);
-    if (again.length > loop.length) loop = again;
+  const links = candidateLinks(cols, rows, n <= 2 ? 0.35 : 0.3 + rng() * 0.6, rng);
+  const adj = Array.from({ length: cols * rows }, () => []);
+  links.forEach(([a, b], e) => { adj[a].push([b, e]); adj[b].push([a, e]); });
+
+  const taken = new Uint8Array(links.length);
+  const degree = new Uint8Array(cols * rows);
+  let count = 0;
+  for (let tries = 0; tries < 400 && count < lines; tries++) {
+    const touched = degree.reduce((acc, d, v) => (d ? acc.push(v) : 0, acc), []);
+    const start = touched.length ? pick(touched, rng) : Math.floor(rng() * cols * rows);
+    // Mostly small loops, with the odd long one so drawings aren't just stacked triangles.
+    const maxLen = Math.min(lines - count + 2, rng() < 0.3 ? 12 : 3 + Math.floor(rng() * 4));
+    const loop = findLoop(start, adj, taken, Math.max(3, maxLen), rng);
+    if (!loop) continue;
+    for (const e of loop) {
+      taken[e] = 1;
+      degree[links[e][0]]++; degree[links[e][1]]++;
+    }
+    count += loop.length;
   }
-  return crop(w, loop);
+  return compact(cols, links.filter((_, e) => taken[e]));
 }
 
-// Trim empty rows and columns so the board uses all the space it's given.
-function crop(w, loop) {
-  let minX = Infinity, minY = Infinity, maxX = -1, maxY = -1;
-  for (const c of loop) {
-    const x = c % w, y = (c / w) | 0;
-    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
-    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
-  }
-  const cw = maxX - minX + 1, ch = maxY - minY + 1;
-  const solution = loop.map(c => ((c / w | 0) - minY) * cw + (c % w) - minX);
-  const open = new Uint8Array(cw * ch);
-  for (const c of solution) open[c] = 1;
-  return { w: cw, h: ch, open, count: solution.length, solution };
+// Keep only the dots that have lines, renumbered, with the drawing moved to start at (0, 0).
+function compact(cols, links) {
+  const used = [...new Set(links.flat())].sort((a, b) => a - b);
+  const index = new Map(used.map((v, i) => [v, i]));
+  const xs = used.map(v => v % cols), ys = used.map(v => Math.floor(v / cols));
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  const nodes = used.map((_, i) => ({ x: xs[i] - minX, y: ys[i] - minY }));
+  const edges = links.map(([a, b]) => [index.get(a), index.get(b)]);
+  return {
+    nodes,
+    edges,
+    w: Math.max(...xs) - minX + 1,
+    h: Math.max(...ys) - minY + 1,
+    adj: adjacency(nodes.length, edges),
+  };
 }
 
-// True when `path` visits every open cell exactly once, moving between neighbours, and its last cell sits next to its
-// first (so the loop closes).
-export function isSolved(level, path) {
-  if (path.length !== level.count) return false;
-  const seen = new Uint8Array(level.open.length);
-  for (let i = 0; i < path.length; i++) {
-    const c = path[i];
-    if (!level.open[c] || seen[c]) return false;
-    seen[c] = 1;
-    if (!adjacent(level.w, c, path[(i + 1) % path.length])) return false;
+export function adjacency(nodeCount, edges) {
+  const adj = Array.from({ length: nodeCount }, () => []);
+  edges.forEach(([a, b], e) => { adj[a].push([b, e]); adj[b].push([a, e]); });
+  return adj;
+}
+
+// True when every line not yet used can still be reached from `from` over unused lines, i.e. the stroke can still
+// be finished from there.
+export function canFinish(level, used, from) {
+  const seen = new Uint8Array(level.nodes.length);
+  const stack = [from];
+  seen[from] = 1;
+  let reached = 0;
+  const counted = new Uint8Array(level.edges.length);
+  while (stack.length) {
+    const v = stack.pop();
+    for (const [u, e] of level.adj[v]) {
+      if (used[e]) continue;
+      if (!counted[e]) { counted[e] = 1; reached++; }
+      if (!seen[u]) { seen[u] = 1; stack.push(u); }
+    }
+  }
+  let left = 0;
+  for (let e = 0; e < level.edges.length; e++) if (!used[e]) left++;
+  return reached === left;
+}
+
+// Fleury's rule: from `at`, the next line to take is any unused one that doesn't strand the rest of the drawing.
+// Returns up to `steps` lines in order, as [from, to, edge] triples.
+export function nextMoves(level, used, at, steps) {
+  const u = Uint8Array.from(used);
+  const out = [];
+  for (let k = 0; k < steps; k++) {
+    const options = level.adj[at].filter(([, e]) => !u[e]);
+    if (!options.length) break;
+    let choice = options[0];
+    for (const opt of options) {
+      u[opt[1]] = 1;
+      const ok = canFinish(level, u, opt[0]);
+      u[opt[1]] = 0;
+      if (ok) { choice = opt; break; }
+    }
+    u[choice[1]] = 1;
+    out.push([at, choice[0], choice[1]]);
+    at = choice[0];
+  }
+  return out;
+}
+
+// True when `trail` (a list of dots) uses every line exactly once and ends where it began.
+export function isSolved(level, trail) {
+  if (trail.length !== level.edges.length + 1 || trail[0] !== trail.at(-1)) return false;
+  const used = new Uint8Array(level.edges.length);
+  for (let i = 1; i < trail.length; i++) {
+    const hit = level.adj[trail[i - 1]].find(([v, e]) => v === trail[i] && !used[e]);
+    if (!hit) return false;
+    used[hit[1]] = 1;
   }
   return true;
-}
-
-export function adjacent(w, a, b) {
-  const d = Math.abs(a - b);
-  return d === w || (d === 1 && Math.floor(a / w) === Math.floor(b / w));
 }

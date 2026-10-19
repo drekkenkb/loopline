@@ -3,6 +3,7 @@
   --panel: #1e212b;
   --cell: #2a2e3b;
   --cell-on: #1f4a52;
+  --dot: #8a91a8;
   --line: #3fd6c4;
   --line-hi: #eafffb;
   --warn: #ff7a6b;
@@ -14,8 +15,9 @@
   :root {
     --bg: #f3f1ec;
     --panel: #ffffff;
-    --cell: #dedad1;
+    --cell: #d2cdc1;
     --cell-on: #b9e6df;
+    --dot: #8d877b;
     --line: #12a594;
     --line-hi: #ffffff;
     --warn: #d9483a;

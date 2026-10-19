@@ -1,4 +1,4 @@
-import { makeLevel } from "./gen.js";
+import { makeLevel, canFinish, nextMoves } from "./gen.js";
 
 const $ = id => document.getElementById(id);
 const canvas = $("board"), ctx = canvas.getContext("2d");
@@ -8,35 +8,44 @@ const store = {
   set(k, v) { try { localStorage.setItem("loopline." + k, JSON.stringify(v)); } catch { /* private mode */ } },
 };
 
-const progress = store.get("progress", { unlocked: 1, best: {} });
-let levelNo = Math.min(store.get("level", 1), progress.unlocked);
+// Progress from the old fill-the-grid version doesn't carry over.
+const progress = store.get("progress2", { unlocked: 1, best: {} });
+let levelNo = Math.min(store.get("level2", 1), progress.unlocked);
 
-let level, path, onPath, closed, startTime, pointer = null;
+// `trail` is the dots visited in order; `lines` the edge used for each step between them.
+let level, trail, lines, used, done, startTime, pointer = null, finger = null, lastPos = null;
 let fadeAnim = null, winAnim = null, hintAnim = null;
 let layout = { s: 0, ox: 0, oy: 0, dpr: 1 };
-let colors = {};
+const colors = {};
 
 function readColors() {
   const cs = getComputedStyle(document.documentElement);
-  for (const k of ["bg", "cell", "cell-on", "line", "line-hi", "warn"]) colors[k] = cs.getPropertyValue("--" + k).trim();
+  for (const k of ["bg", "cell", "cell-on", "dot", "line", "line-hi", "warn"]) colors[k] = cs.getPropertyValue("--" + k).trim();
   requestDraw();
 }
 
 function loadLevel(n) {
   levelNo = n;
-  store.set("level", n);
+  store.set("level2", n);
   level = makeLevel(n);
-  path = [];
-  onPath = new Uint8Array(level.open.length);
-  closed = false;
+  clearTrail();
+  done = false;
   startTime = 0;
   fadeAnim = winAnim = hintAnim = null;
   $("win").hidden = true;
   $("level-name").textContent = `Level ${n}`;
   $("btn-prev").disabled = n <= 1;
   $("btn-next").disabled = n >= progress.unlocked;
-  setStatus(n === 1 ? "Fill every square in one stroke and finish where you started." : `${level.count} squares`);
+  setStatus(n === 1 ? "Trace every line once without lifting — you'll end where you started." : `${level.edges.length} lines`);
   resize();
+}
+
+function clearTrail() {
+  trail = [];
+  lines = [];
+  used = new Uint8Array(level.edges.length);
+  finger = null;
+  $("meter-fill").style.width = "0";
 }
 
 function setStatus(text, kind = "") {
@@ -46,12 +55,15 @@ function setStatus(text, kind = "") {
 }
 
 function updateStatus() {
-  $("meter-fill").style.width = `${(path.length / level.count) * 100}%`;
-  if (closed) return;
-  const left = level.count - path.length;
-  if (!path.length) setStatus(`${level.count} squares`);
-  else if (left) setStatus(`${left} to go`);
-  else setStatus("All filled — now slide back to the start", "good");
+  $("meter-fill").style.width = `${(lines.length / level.edges.length) * 100}%`;
+  if (done) return;
+  const left = level.edges.length - lines.length;
+  if (!trail.length) setStatus(`${level.edges.length} lines`);
+  else if (!canFinish(level, used, trail.at(-1))) {
+    setStatus(level.adj[trail.at(-1)].some(([, e]) => !used[e])
+      ? "That cuts off part of the drawing — slide back"
+      : "Dead end — slide back along your line", "warn");
+  } else setStatus(`${left} to go`);
 }
 
 // ---- Layout & drawing ----
@@ -61,9 +73,10 @@ function resize() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(r.width * dpr);
   canvas.height = Math.round(r.height * dpr);
-  const pad = 16;
-  const s = Math.min((r.width - pad * 2) / level.w, (r.height - pad * 2) / level.h, 84);
-  layout = { s, dpr, ox: (r.width - s * level.w) / 2, oy: Math.max(pad, (r.height - s * level.h) / 2.4) };
+  const pad = 24;
+  const s = Math.min((r.width - pad * 2) / Math.max(1, level.w - 1), (r.height - pad * 2) / Math.max(1, level.h - 1), 110);
+  const bw = s * (level.w - 1), bh = s * (level.h - 1);
+  layout = { s, dpr, ox: (r.width - bw) / 2, oy: Math.max(pad, (r.height - bh) / 2.3) };
   requestDraw();
 }
 
@@ -74,102 +87,130 @@ function requestDraw() {
   requestAnimationFrame(t => { drawQueued = false; draw(t); });
 }
 
-const center = c => {
-  const { s, ox, oy } = layout;
-  return [ox + (c % level.w + 0.5) * s, oy + (Math.floor(c / level.w) + 0.5) * s];
-};
+const pos = v => [layout.ox + level.nodes[v].x * layout.s, layout.oy + level.nodes[v].y * layout.s];
 
-function strokePath(cells, loop) {
+function strokeEdges(es) {
   ctx.beginPath();
-  cells.forEach((c, i) => { const [x, y] = center(c); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-  if (loop) ctx.closePath();
+  for (const e of es) {
+    const [a, b] = level.edges[e];
+    ctx.moveTo(...pos(a));
+    ctx.lineTo(...pos(b));
+  }
+  ctx.stroke();
+}
+
+function strokeTrail(dots) {
+  ctx.beginPath();
+  dots.forEach((v, i) => (i ? ctx.lineTo(...pos(v)) : ctx.moveTo(...pos(v))));
   ctx.stroke();
 }
 
 function draw(now) {
-  const { s, ox, oy, dpr } = layout;
+  const { s, dpr } = layout;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  let animating = false;
-
-  const gap = Math.max(2, s * 0.06), rad = s * 0.18;
-  for (let c = 0; c < level.open.length; c++) {
-    if (!level.open[c]) continue;
-    const x = ox + (c % level.w) * s + gap, y = oy + Math.floor(c / level.w) * s + gap;
-    ctx.fillStyle = onPath[c] ? colors["cell-on"] : colors.cell;
-    ctx.beginPath();
-    ctx.roundRect(x, y, s - gap * 2, s - gap * 2, rad);
-    ctx.fill();
-  }
-
   ctx.lineCap = ctx.lineJoin = "round";
+  let animating = false;
+  const lw = Math.min(s * 0.13, 14);
 
-  if (hintAnim) {
-    const t = (now - hintAnim.t0) / 2200;
-    if (t < 1) {
-      ctx.globalAlpha = Math.min(1, 4 * (1 - t)) * 0.55;
-      ctx.strokeStyle = colors["line-hi"];
-      ctx.lineWidth = s * 0.14;
-      ctx.setLineDash([s * 0.12, s * 0.24]);
-      strokePath(hintAnim.cells, false);
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-      animating = true;
-    } else hintAnim = null;
-  }
+  // Lines still to trace.
+  ctx.strokeStyle = colors.cell;
+  ctx.lineWidth = lw;
+  strokeEdges(level.edges.map((_, e) => e).filter(e => !used[e]));
 
   if (fadeAnim) {
     const t = (now - fadeAnim.t0) / 450;
     if (t < 1) {
       ctx.globalAlpha = 1 - t;
       ctx.strokeStyle = colors.warn;
-      ctx.lineWidth = s * 0.3;
-      strokePath(fadeAnim.cells, false);
+      strokeTrail(fadeAnim.dots);
       ctx.globalAlpha = 1;
       animating = true;
     } else fadeAnim = null;
   }
 
-  if (path.length) {
+  // Lines already traced.
+  if (trail.length > 1) {
     ctx.strokeStyle = colors.line;
-    ctx.lineWidth = s * 0.3;
-    if (path.length > 1) strokePath(path, closed);
+    ctx.lineWidth = lw;
+    strokeTrail(trail);
+  }
 
-    if (winAnim) {
-      // A bright pulse runs once around the finished loop.
-      const t = (now - winAnim.t0) / 1400;
-      if (t < 1) {
-        const len = path.length * s;
-        ctx.strokeStyle = colors["line-hi"];
-        ctx.lineWidth = s * 0.16;
-        ctx.globalAlpha = Math.min(1, 3 * (1 - t));
-        ctx.setLineDash([s * 2.5, len]);
-        ctx.lineDashOffset = -t * len;
-        strokePath(path, true);
-        ctx.setLineDash([]);
-        ctx.lineDashOffset = 0;
-        ctx.globalAlpha = 1;
-        animating = true;
-      } else winAnim = null;
-    }
+  if (winAnim) {
+    // A bright pulse runs once along the whole stroke.
+    const t = (now - winAnim.t0) / 1600;
+    if (t < 1) {
+      let len = 0;
+      for (let i = 1; i < trail.length; i++) {
+        const [ax, ay] = pos(trail[i - 1]), [bx, by] = pos(trail[i]);
+        len += Math.hypot(bx - ax, by - ay);
+      }
+      ctx.strokeStyle = colors["line-hi"];
+      ctx.lineWidth = lw * 0.5;
+      ctx.globalAlpha = Math.min(1, 3 * (1 - t));
+      ctx.setLineDash([s * 1.2, len + s * 2]);
+      ctx.lineDashOffset = s * 1.2 - t * (len + s * 1.2);
+      strokeTrail(trail);
+      ctx.setLineDash([]);
+      ctx.lineDashOffset = 0;
+      ctx.globalAlpha = 1;
+      animating = true;
+    } else winAnim = null;
+  }
 
-    const [sx, sy] = center(path[0]);
-    ctx.fillStyle = colors.line;
+  if (hintAnim) {
+    const t = (now - hintAnim.t0) / 2400;
+    if (t < 1) {
+      ctx.globalAlpha = Math.min(1, 4 * (1 - t));
+      ctx.strokeStyle = colors["line-hi"];
+      ctx.lineWidth = lw * 0.45;
+      ctx.setLineDash([lw * 0.6, lw * 1.1]);
+      ctx.lineDashOffset = -now / 30;
+      strokeTrail(hintAnim.dots);
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+      animating = true;
+    } else hintAnim = null;
+  }
+
+  // Rubber band from the current dot to the finger.
+  if (finger && trail.length && !done) {
+    ctx.strokeStyle = colors.line;
+    ctx.globalAlpha = 0.45;
+    ctx.lineWidth = lw * 0.6;
     ctx.beginPath();
-    ctx.arc(sx, sy, s * 0.24, 0, Math.PI * 2);
+    ctx.moveTo(...pos(trail.at(-1)));
+    ctx.lineTo(...finger);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // Dots: filled once every line at them is traced.
+  const r = Math.min(s * 0.11, 11);
+  level.nodes.forEach((_, v) => {
+    const full = level.adj[v].every(([, e]) => used[e]);
+    const touched = level.adj[v].some(([, e]) => used[e]) || trail[0] === v;
+    ctx.fillStyle = full ? colors.line : touched ? colors["line-hi"] : colors.dot;
+    ctx.beginPath();
+    ctx.arc(...pos(v), r, 0, Math.PI * 2);
     ctx.fill();
-    if (!closed) {
-      // The start square keeps a hollow ring so it's easy to find again at the end.
-      ctx.fillStyle = colors["cell-on"];
-      ctx.beginPath();
-      ctx.arc(sx, sy, s * 0.11, 0, Math.PI * 2);
-      ctx.fill();
-      const [hx, hy] = center(path.at(-1));
+  });
+
+  if (trail.length) {
+    // The start dot gets a ring so it's easy to find again; the current dot gets a bright marker.
+    const [sx, sy] = pos(trail[0]);
+    ctx.strokeStyle = colors.line;
+    ctx.lineWidth = Math.max(2, r * 0.35);
+    ctx.beginPath();
+    ctx.arc(sx, sy, r * 1.9, 0, Math.PI * 2);
+    ctx.stroke();
+    if (!done) {
+      const [hx, hy] = pos(trail.at(-1));
       ctx.fillStyle = colors["line-hi"];
       ctx.strokeStyle = colors.line;
-      ctx.lineWidth = s * 0.06;
+      ctx.lineWidth = r * 0.4;
       ctx.beginPath();
-      ctx.arc(hx, hy, s * 0.16, 0, Math.PI * 2);
+      ctx.arc(hx, hy, r * 1.25, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
@@ -180,23 +221,31 @@ function draw(now) {
 
 // ---- Input ----
 
-// Pointer position in board units (1 = one square).
-function boardPos(e) {
+function canvasPos(e) {
   const r = canvas.getBoundingClientRect();
-  return [(e.clientX - r.left - layout.ox) / layout.s, (e.clientY - r.top - layout.oy) / layout.s];
+  return [e.clientX - r.left, e.clientY - r.top];
+}
+
+// The dot under a point, if it's within grabbing distance.
+function dotAt([x, y], reach = 0.36) {
+  let best = -1, bestD = layout.s * reach;
+  level.nodes.forEach((_, v) => {
+    const [vx, vy] = pos(v), d = Math.hypot(vx - x, vy - y);
+    if (d < bestD) { bestD = d; best = v; }
+  });
+  return best;
 }
 
 canvas.addEventListener("pointerdown", e => {
-  if (pointer !== null || closed) return;
-  const [fx, fy] = boardPos(e);
-  const x = Math.floor(fx), y = Math.floor(fy);
-  if (x < 0 || y < 0 || x >= level.w || y >= level.h || !level.open[y * level.w + x]) return;
+  if (pointer !== null || done) return;
+  const p = canvasPos(e);
+  const v = dotAt(p, 0.45);
+  if (v < 0) return;
   pointer = e.pointerId;
   canvas.setPointerCapture(e.pointerId);
-  const c = y * level.w + x;
-  onPath.fill(0);
-  path = [c];
-  onPath[c] = 1;
+  clearTrail();
+  trail = [v];
+  finger = lastPos = p;
   fadeAnim = null;
   if (!startTime) startTime = performance.now();
   updateStatus();
@@ -205,99 +254,91 @@ canvas.addEventListener("pointerdown", e => {
 
 canvas.addEventListener("pointermove", e => {
   if (e.pointerId !== pointer) return;
-  const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  const events = e.getCoalescedEvents?.() ?? [];
   for (const ev of events.length ? events : [e]) {
-    moveToward(...boardPos(ev));
-    if (closed) break;
+    // Check points between move events too, so a quick flick still registers each dot it passes.
+    const p = canvasPos(ev), [lx, ly] = lastPos;
+    const steps = Math.max(1, Math.ceil(Math.hypot(p[0] - lx, p[1] - ly) / (layout.s * 0.12)));
+    for (let i = 1; i <= steps && !done; i++) visit([lx + (p[0] - lx) * i / steps, ly + (p[1] - ly) * i / steps]);
+    lastPos = p;
+    if (done) break;
   }
+  finger = lastPos;
+  requestDraw();
 });
+
+function visit(p) {
+  const v = dotAt(p);
+  const head = trail.at(-1);
+  if (v < 0 || v === head) return;
+  // Sliding back onto the previous dot undoes the last line.
+  if (trail.length > 1 && v === trail.at(-2)) {
+    used[lines.pop()] = 0;
+    trail.pop();
+    updateStatus();
+    return;
+  }
+  const link = level.adj[head].find(([u, e]) => u === v && !used[e]);
+  if (!link) return;
+  used[link[1]] = 1;
+  lines.push(link[1]);
+  trail.push(v);
+  hintAnim = null;
+  updateStatus();
+  if (lines.length === level.edges.length) solved();
+}
 
 function endStroke(e) {
   if (e.pointerId !== pointer) return;
   pointer = null;
-  if (closed || !path.length) return;
-  if (path.length > 1) {
-    fadeAnim = { cells: path, t0: performance.now() };
+  finger = null;
+  if (done || !trail.length) return;
+  if (lines.length) {
+    fadeAnim = { dots: trail, t0: performance.now() };
     setStatus("You lifted your finger — start again", "warn");
     canvas.classList.remove("shake");
     void canvas.offsetWidth;
     canvas.classList.add("shake");
     navigator.vibrate?.(60);
-  } else updateStatus();
-  path = [];
-  onPath.fill(0);
-  $("meter-fill").style.width = "0";
+  }
+  clearTrail();
+  if (!fadeAnim) updateStatus();
   requestDraw();
 }
 canvas.addEventListener("pointerup", endStroke);
 canvas.addEventListener("pointercancel", endStroke);
 
-// Walk the head of the path one square at a time toward the pointer, so fast swipes don't skip squares. When the
-// pointer is off diagonally, try the axis it's further along first.
-function moveToward(fx, fy) {
-  const { w, h } = level;
-  const tx = Math.min(w - 1, Math.max(0, Math.floor(fx))), ty = Math.min(h - 1, Math.max(0, Math.floor(fy)));
-  let changed = false;
-  for (let guard = 0; guard < w + h && !closed; guard++) {
-    const head = path.at(-1), hx = head % w, hy = Math.floor(head / w);
-    if (hx === tx && hy === ty) break;
-    const sx = Math.sign(tx - hx), sy = Math.sign(ty - hy);
-    const across = sx ? [head + sx] : [], down = sy ? [head + sy * w] : [];
-    const steps = Math.abs(fx - hx - 0.5) >= Math.abs(fy - hy - 0.5) ? [...across, ...down] : [...down, ...across];
-    if (!steps.some(tryStep)) break;
-    changed = true;
-  }
-  if (changed) { updateStatus(); requestDraw(); }
-}
-
-function tryStep(c) {
-  if (path.length > 1 && c === path.at(-2)) {
-    onPath[path.pop()] = 0;
-    return true;
-  }
-  if (!level.open[c]) return false;
-  if (c === path[0] && path.length === level.count) {
-    solved();
-    return true;
-  }
-  if (onPath[c]) return false;
-  path.push(c);
-  onPath[c] = 1;
-  return true;
-}
-
 function solved() {
-  closed = true;
+  done = true;
+  finger = null;
   const ms = performance.now() - startTime;
   const prev = progress.best[levelNo];
   if (!prev || ms < prev) progress.best[levelNo] = Math.round(ms);
   progress.unlocked = Math.max(progress.unlocked, levelNo + 1);
-  store.set("progress", progress);
+  store.set("progress2", progress);
   $("btn-next").disabled = false;
   winAnim = { t0: performance.now() };
   navigator.vibrate?.([30, 40, 30]);
   setStatus(`Solved in ${fmt(ms)}`, "good");
-  $("win-time").textContent = `${fmt(ms)}` + (prev && ms < prev ? " — new best!" : prev ? ` · best ${fmt(prev)}` : "");
+  $("win-time").textContent = fmt(ms) + (prev && ms < prev ? " — new best!" : prev ? ` · best ${fmt(prev)}` : "");
   const n = levelNo;
-  setTimeout(() => { if (closed && levelNo === n && $("levels").hidden) $("win").hidden = false; }, 1100);
+  setTimeout(() => { if (done && levelNo === n && $("levels").hidden) $("win").hidden = false; }, 1200);
 }
 
 const fmt = ms => ms < 60000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 
-// ---- Hint: flash a stretch of one known solution ----
+// ---- Hint: show the next few lines that keep the drawing finishable ----
 
 $("btn-hint").addEventListener("click", () => {
-  if (closed) return;
-  const sol = level.solution, n = Math.max(4, Math.round(sol.length / 4));
-  // Start the hint at the player's starting square when they have one, heading whichever way matches their line.
-  let i = Math.floor(Math.random() * sol.length), dir = 1;
-  if (path.length) {
-    i = sol.indexOf(path[0]);
-    if (path.length > 1 && sol[(i + 1) % sol.length] !== path[1]) dir = -1;
+  if (done) return;
+  if (trail.length && !canFinish(level, used, trail.at(-1))) {
+    setStatus("Slide back first — the drawing can't be finished from here", "warn");
+    return;
   }
-  const cells = [];
-  for (let k = 0; k < n; k++) cells.push(sol[((i + k * dir) % sol.length + sol.length) % sol.length]);
-  hintAnim = { cells, t0: performance.now() };
+  const from = trail.length ? trail.at(-1) : 0;
+  const moves = nextMoves(level, used, from, 3);
+  hintAnim = { dots: [from, ...moves.map(m => m[1])], t0: performance.now() };
+  if (!trail.length) setStatus("Try starting at the flashing line");
   requestDraw();
 });
 
@@ -321,7 +362,7 @@ $("btn-levels").addEventListener("click", () => {
   grid.querySelector(".current")?.scrollIntoView({ block: "center" });
 });
 $("btn-close-levels").addEventListener("click", () => { $("levels").hidden = true; });
-$("help").addEventListener("click", e => { if (e.target.id === "btn-help-ok") { $("help").hidden = true; store.set("seenHelp", true); } });
+$("help").addEventListener("click", e => { if (e.target.id === "btn-help-ok") { $("help").hidden = true; store.set("seenHelp2", true); } });
 
 // ---- Boot ----
 
@@ -329,8 +370,8 @@ new ResizeObserver(() => level && resize()).observe($("stage"));
 matchMedia("(prefers-color-scheme: light)").addEventListener("change", readColors);
 readColors();
 loadLevel(levelNo);
-if (!store.get("seenHelp", false)) $("help").hidden = false;
+if (!store.get("seenHelp2", false)) $("help").hidden = false;
 
 if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js");
 
-window.loopline = { get level() { return level; }, get path() { return path; }, loadLevel, progress };
+window.loopline = { get level() { return level; }, get trail() { return trail; }, get done() { return done; }, loadLevel, progress, nextMoves, pos };

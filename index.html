@@ -26,7 +26,7 @@
   </header>
 
   <div class="meter"><div id="meter-fill"></div></div>
-  <p id="status" class="status">Fill every square in one stroke and finish where you started.</p>
+  <p id="status" class="status"></p>
 
   <main id="stage">
     <canvas id="board"></canvas>
@@ -34,7 +34,7 @@
 
   <div id="win" class="overlay" hidden>
     <div class="card">
-      <h2>Loop closed!</h2>
+      <h2>Drawing complete!</h2>
       <p id="win-time"></p>
       <button id="btn-continue" class="primary">Next level</button>
     </div>
@@ -54,11 +54,11 @@
     <div class="card">
       <h2>How to play</h2>
       <ol class="rules">
-        <li>Put your finger on any square.</li>
-        <li>Drag through <b>every</b> square without lifting.</li>
-        <li>Finish by sliding back onto the square you started on.</li>
+        <li>Put your finger on any dot.</li>
+        <li>Trace <b>every</b> line exactly once without lifting.</li>
+        <li>Lines can't be drawn twice, so plan your route. You'll finish back on the dot you started from.</li>
       </ol>
-      <p class="muted">Slide back along your line to undo. Lift early and the line resets.</p>
+      <p class="muted">Slide back along your line to undo. Lift early and it resets. Stuck? Tap ? for the next few lines.</p>
       <button id="btn-help-ok" class="primary">Got it</button>
     </div>
   </div>
